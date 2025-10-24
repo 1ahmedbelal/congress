@@ -1,77 +1,540 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>NSDA Congress PO Toolkit</title>
-    <style>
-        body { font-family: Arial, sans-serif; padding: 20px; }
-        .container { display: flex; gap: 20px; }
-        .panel { flex: 1; border: 1px solid #ddd; padding: 15px; border-radius: 5px; }
-        iframe { width: 100%; height: 500px; border: none; }
-        button { padding: 8px 15px; margin: 5px; cursor: pointer; }
-        #timer { font-size: 2em; font-weight: bold; text-align: center; }
-    </style>
-</head>
-<body>
-    <h1>Congress Presiding Officer Toolkit</h1>
-    
-    <div class="container">
-        <!-- Google Sheet Embed -->
-        <div class="panel">
-            <h2>Speaker Tracker</h2>
-            <iframe src="https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit?usp=sharing"></iframe>
-        </div>
-        
-        <!-- Timer & PO Phrases -->
-        <div class="panel">
-            <h2>Timer</h2>
-            <div id="timer">00:00:00</div>
-            <button onclick="startTimer()">Start</button>
-            <button onclick="stopTimer()">Stop</button>
-            <button onclick="resetTimer()">Reset</button>
-            
-            <h2>PO Phrases</h2>
-            <button onclick="speak('The chamber will come to order.')">Call to Order</button>
-            <button onclick="speak('The question is before the chamber.')">Vote Prompt</button>
-            <button onclick="speak('The time yields.')">Time Warning</button>
-            <div id="phraseOutput" style="margin-top:10px;padding:10px;background:#f5f5f5;"></div>
-        </div>
-    </div>
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
+import { Slider } from "@/components/ui/slider";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Copy, Link2, Moon, Pause, Play, RefreshCw, SunMedium, Volume2 } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 
-    <script>
-        // Timer Functionality
-        let timerInterval;
-        let seconds = 0;
-        
-        function startTimer() {
-            timerInterval = setInterval(() => {
-                seconds++;
-                updateTimerDisplay();
-            }, 1000);
-        }
-        
-        function stopTimer() {
-            clearInterval(timerInterval);
-        }
-        
-        function resetTimer() {
-            seconds = 0;
-            updateTimerDisplay();
-        }
-        
-        function updateTimerDisplay() {
-            const hours = Math.floor(seconds / 3600);
-            const minutes = Math.floor((seconds % 3600) / 60);
-            const secs = seconds % 60;
-            document.getElementById('timer').textContent = 
-                `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-        }
-        
-        // PO Phrases
-        function speak(text) {
-            document.getElementById('phraseOutput').textContent = text;
-            // Uncomment to enable voice:
-            // window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
-        }
-    </script>
-</body>
-</html>
+/**
+ * NSDA Congress Presiding Officer Toolkit
+ * - Paste a Google Sheet link (set it shareable) to view & edit live in the app
+ * - Precision timer with presets, overtime highlight, keyboard shortcuts, and chime
+ * - Presiding notes & phrases (click to speak/copy), plus your own custom notes
+ * - Clean, responsive UI with dark mode toggle
+ *
+ * Keyboard Shortcuts
+ *  Space → Start/Stop
+ *  R → Reset
+ *  1 → 2:00 preset  |  2 → 3:00 preset  |  3 → 3:30 preset  |  4 → 4:00 preset
+ */
+
+const SHEET_KEY = "nsda.po.sheetUrl";
+const DARK_KEY = "nsda.po.darkmode";
+const BEEP_KEY = "nsda.po.beep";
+const PRESET_KEY = "nsda.po.timerPreset";
+const CUSTOM_NOTES_KEY = "nsda.po.customNotes";
+
+export default function NSDACongressPOKit() {
+  const [dark, setDark] = useState(() => localStorage.getItem(DARK_KEY) === "1");
+  const [sheetUrl, setSheetUrl] = useState(() => localStorage.getItem(SHEET_KEY) || "");
+  const [savedSheetUrl, setSavedSheetUrl] = useState(() => localStorage.getItem(SHEET_KEY) || "");
+  const [beep, setBeep] = useState(() => localStorage.getItem(BEEP_KEY) !== "0");
+  const [targetSec, setTargetSec] = useState(() => Number(localStorage.getItem(PRESET_KEY) || 0));
+  const [seconds, setSeconds] = useState(0);
+  const [running, setRunning] = useState(false);
+  const [lastPhrase, setLastPhrase] = useState("");
+  const [useVoice, setUseVoice] = useState(false);
+  const [customNotes, setCustomNotes] = useState(() => localStorage.getItem(CUSTOM_NOTES_KEY) || "");
+
+  const intervalRef = useRef<number | null>(null);
+  const startTsRef = useRef<number | null>(null);
+  const carriedRef = useRef(0);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", dark);
+    localStorage.setItem(DARK_KEY, dark ? "1" : "0");
+  }, [dark]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement)?.tagName === "INPUT" || (e.target as HTMLElement)?.tagName === "TEXTAREA") return;
+      if (e.code === "Space") { e.preventDefault(); toggleRun(); }
+      if (e.key.toLowerCase() === "r") reset();
+      if (e.key === "1") setPreset(120);
+      if (e.key === "2") setPreset(180);
+      if (e.key === "3") setPreset(210);
+      if (e.key === "4") setPreset(240);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(() => {
+    if (!running) return;
+    startTsRef.current = performance.now();
+    intervalRef.current = window.setInterval(() => {
+      const now = performance.now();
+      const delta = Math.floor((now - (startTsRef.current || now)) / 1000);
+      setSeconds(carriedRef.current + Math.max(0, delta));
+    }, 200);
+    return () => {
+      if (intervalRef.current) window.clearInterval(intervalRef.current);
+      intervalRef.current = null;
+      if (startTsRef.current) {
+        const now = performance.now();
+        const delta = Math.floor((now - startTsRef.current) / 1000);
+        carriedRef.current = carriedRef.current + Math.max(0, delta);
+      }
+      startTsRef.current = null;
+    };
+  }, [running]);
+
+  useEffect(() => {
+    // Chime at target time hitting exactly and each 30s in overtime
+    if (!beep || targetSec <= 0) return;
+    if (seconds === targetSec) makeBeep();
+    if (seconds > targetSec && seconds % 30 === 0) makeBeep(0.04);
+  }, [seconds, beep, targetSec]);
+
+  const toggleRun = () => setRunning((r) => !r);
+
+  const reset = () => {
+    setRunning(false);
+    setSeconds(0);
+    carriedRef.current = 0;
+  };
+
+  const setPreset = (s: number) => {
+    localStorage.setItem(PRESET_KEY, String(s));
+    setTargetSec(s);
+    reset();
+  };
+
+  const formatted = useMemo(() => formatHMS(seconds), [seconds]);
+  const targetLabel = useMemo(() => (targetSec > 0 ? formatHMS(targetSec) : "--:--"), [targetSec]);
+  const overtime = targetSec > 0 && seconds > targetSec;
+
+  function makeBeep(gain = 0.06) {
+    try {
+      const ctx = (audioCtxRef.current ||= new (window.AudioContext || (window as any).webkitAudioContext)());
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sine";
+      o.frequency.value = 880;
+      g.gain.value = gain;
+      o.connect(g).connect(ctx.destination);
+      o.start();
+      setTimeout(() => o.stop(), 160);
+    } catch {}
+  }
+
+  function saveSheet() {
+    const clean = normalizeSheetUrl(sheetUrl.trim());
+    setSheetUrl(clean);
+    setSavedSheetUrl(clean);
+    localStorage.setItem(SHEET_KEY, clean);
+  }
+
+  function speak(text: string) {
+    setLastPhrase(text);
+    navigator.clipboard?.writeText(text).catch(() => {});
+    if (useVoice && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 1.04;
+      u.pitch = 1.0;
+      window.speechSynthesis.speak(u);
+    }
+  }
+
+  useEffect(() => {
+    localStorage.setItem(CUSTOM_NOTES_KEY, customNotes || "");
+  }, [customNotes]);
+
+  const embedSrc = useMemo(() => (savedSheetUrl ? savedSheetUrl : ""), [savedSheetUrl]);
+
+  return (
+    <TooltipProvider>
+      <div className="min-h-screen w-full bg-background text-foreground transition-colors">
+        <div className="mx-auto max-w-7xl p-4 md:p-6">
+          <header className="flex items-center justify-between gap-3">
+            <div>
+              <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">NSDA Congress Presiding Officer Toolkit</h1>
+              <p className="text-sm text-muted-foreground">Run the chamber smoothly: speaker sheet, precision timer, and ready-to-use presiding phrases.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant={overtime ? "destructive" : "secondary"}>{overtime ? "Overtime" : "On-time"}</Badge>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="ghost" size="icon" onClick={() => setDark((d) => !d)} aria-label="Toggle theme">
+                    {dark ? <SunMedium className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Toggle light/dark</TooltipContent>
+              </Tooltip>
+            </div>
+          </header>
+
+          <main className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
+            {/* Left: Google Sheet */}
+            <Card className="lg:col-span-2">
+              <CardHeader className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                <div>
+                  <CardTitle>Speaker Tracker (Google Sheets)</CardTitle>
+                  <p className="text-sm text-muted-foreground">Paste a shareable Sheets link with edit permissions. You can edit live right here.</p>
+                </div>
+                <div className="flex w-full flex-col gap-2 md:w-[520px]">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      placeholder="Paste Google Sheet link"
+                      value={sheetUrl}
+                      onChange={(e) => setSheetUrl(e.target.value)}
+                    />
+                    <Button onClick={saveSheet}>
+                      <Link2 className="mr-2 h-4 w-4" />Load
+                    </Button>
+                  </div>
+                  {embedSrc && (
+                    <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                      <span className="truncate">{embedSrc}</span>
+                      <div className="flex items-center gap-2">
+                        <Button variant="outline" size="sm" onClick={() => navigator.clipboard.writeText(embedSrc)}>
+                          <Copy className="mr-2 h-3.5 w-3.5" />Copy link
+                        </Button>
+                        <Button variant="outline" size="sm" asChild>
+                          <a href={embedSrc} target="_blank" rel="noreferrer">Open in tab</a>
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent>
+                {embedSrc ? (
+                  <div className="rounded-2xl border bg-muted/20 p-2">
+                    <iframe
+                      className="h-[60vh] w-full rounded-xl border"
+                      src={embedSrc}
+                      title="Speaker Tracker"
+                      allow="clipboard-write; clipboard-read"
+                    />
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Tip: If the sheet doesn't load/edit, ensure the link has <em>edit</em> permission and you're signed in.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+                    Paste a Google Sheet link above and click <strong>Load</strong>.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Right: Timer & Notes */}
+            <div className="flex flex-col gap-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Debate Timer</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-col items-center gap-4">
+                    <AnimatePresence mode="wait">
+                      <motion.div
+                        key={formatted + (overtime ? "ot" : "ok")}
+                        initial={{ scale: 0.98, opacity: 0.8 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        exit={{ scale: 0.98, opacity: 0.8 }}
+                        className={`font-mono text-5xl md:text-6xl tabular-nums ${
+                          overtime ? "text-destructive" : "text-foreground"
+                        }`}
+                      >
+                        {formatted}
+                      </motion.div>
+                    </AnimatePresence>
+
+                    <div className="text-xs text-muted-foreground">
+                      Target: <span className="font-mono">{targetLabel}</span>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-center gap-2">
+                      <Button onClick={toggleRun} size="lg" variant={running ? "destructive" : "default"}>
+                        {running ? <Pause className="mr-2 h-4 w-4" /> : <Play className="mr-2 h-4 w-4" />} {running ? "Stop" : "Start"}
+                      </Button>
+                      <Button onClick={reset} variant="secondary">
+                        <RefreshCw className="mr-2 h-4 w-4" /> Reset
+                      </Button>
+                      <div className="flex items-center gap-2 rounded-xl border px-3 py-2">
+                        <span className="text-xs text-muted-foreground">Chime</span>
+                        <Switch checked={beep} onCheckedChange={(v) => { setBeep(v); localStorage.setItem(BEEP_KEY, v ? "1" : "0"); }} />
+                        <Volume2 className="h-4 w-4" />
+                      </div>
+                    </div>
+
+                    <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      {[120, 180, 210, 240].map((s) => (
+                        <Button key={s} variant={targetSec === s ? "default" : "outline"} onClick={() => setPreset(s)}>
+                          {formatHMS(s)}
+                        </Button>
+                      ))}
+                    </div>
+
+                    <div className="mt-3 w-full">
+                      <label className="mb-1 block text-xs text-muted-foreground">Custom target (seconds)</label>
+                      <Slider
+                        value={[targetSec]}
+                        max={600}
+                        step={5}
+                        onValueChange={(v) => setPreset(v[0])}
+                      />
+                    </div>
+
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      Shortcuts: <kbd className="rounded bg-muted px-1">Space</kbd> start/stop, <kbd className="rounded bg-muted px-1">R</kbd> reset, <kbd className="rounded bg-muted px-1">1</kbd>/<kbd className="rounded bg-muted px-1">2</kbd>/<kbd className="rounded bg-muted px-1">3</kbd>/<kbd className="rounded bg-muted px-1">4</kbd> presets
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Presiding Notes & Phrases</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Tabs defaultValue="opening" className="w-full">
+                    <TabsList className="grid w-full grid-cols-2 md:grid-cols-4">
+                      <TabsTrigger value="opening">Opening</TabsTrigger>
+                      <TabsTrigger value="motions">Motions</TabsTrigger>
+                      <TabsTrigger value="voting">Voting</TabsTrigger>
+                      <TabsTrigger value="time">Timekeeping</TabsTrigger>
+                    </TabsList>
+
+                    <TabsContent value="opening" className="mt-4">
+                      <PhraseGrid onSpeak={speak} phrases={OPENING_PHRASES} />
+                    </TabsContent>
+                    <TabsContent value="motions" className="mt-4">
+                      <PhraseGrid onSpeak={speak} phrases={MOTION_PHRASES} />
+                    </TabsContent>
+                    <TabsContent value="voting" className="mt-4">
+                      <PhraseGrid onSpeak={speak} phrases={VOTING_PHRASES} />
+                    </TabsContent>
+                    <TabsContent value="time" className="mt-4">
+                      <PhraseGrid onSpeak={speak} phrases={TIME_PHRASES} />
+                    </TabsContent>
+                  </Tabs>
+
+                  <div className="mt-5 rounded-xl border p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs text-muted-foreground">Last phrase</div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2">
+                          <Switch checked={useVoice} onCheckedChange={setUseVoice} id="voice" />
+                          <label htmlFor="voice" className="text-xs">Speak aloud</label>
+                        </div>
+                        <Button variant="outline" size="sm" onClick={() => navigator.clipboard.writeText(lastPhrase)}>
+                          <Copy className="mr-2 h-3.5 w-3.5" />Copy
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="mt-2 rounded-lg bg-muted p-3 text-sm">{lastPhrase || "—"}</div>
+                  </div>
+
+                  <div className="mt-5">
+                    <h4 className="mb-2 text-sm font-medium">Your Custom Notes</h4>
+                    <Textarea
+                      value={customNotes}
+                      onChange={(e) => setCustomNotes(e.target.value)}
+                      placeholder="Write reminders, chamber quirks, or sponsor names you need to remember."
+                      className="min-h-[120px]"
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </main>
+        </div>
+      </div>
+    </TooltipProvider>
+  );
+}
+
+function PhraseGrid({ phrases, onSpeak }: { phrases: Phrase[]; onSpeak: (t: string) => void }) {
+  const [variant, setVariant] = useState("default");
+  const [speed, setSpeed] = useState("normal");
+
+  const renderText = (p: Phrase) => {
+    let text = p.text;
+    if (variant === "simple" && p.simple) text = p.simple;
+    if (variant === "formal" && p.formal) text = p.formal;
+    // Add optional cadence hints
+    if (speed === "fast") text = text.replaceAll(/\./g, ".  ");
+    if (speed === "slow") text = text.replaceAll(/, /g, ", … ");
+    return text;
+  };
+
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">Tone</span>
+          <Select value={variant} onValueChange={setVariant}>
+            <SelectTrigger className="h-8 w-[140px]"><SelectValue placeholder="Style" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="default">Standard</SelectItem>
+              <SelectItem value="simple">Simple</SelectItem>
+              <SelectItem value="formal">Formal</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">Cadence</span>
+          <Select value={speed} onValueChange={setSpeed}>
+            <SelectTrigger className="h-8 w-[140px]"><SelectValue placeholder="Cadence" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="normal">Normal</SelectItem>
+              <SelectItem value="fast">Fast</SelectItem>
+              <SelectItem value="slow">Slow</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {phrases.map((p, i) => (
+          <Button key={i} variant="outline" className="justify-start" onClick={() => onSpeak(renderText(p))}>
+            {p.label}
+          </Button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function formatHMS(total: number) {
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${h > 0 ? String(h).padStart(2, "0") + ":" : ""}${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function normalizeSheetUrl(url: string) {
+  // Accept any Google Sheets link. If it's a share link or edit link, keep as-is.
+  // If it's a "/pubhtml" or "/preview" link, nudge to "/edit" so it's editable.
+  try {
+    const u = new URL(url);
+    if (!u.hostname.includes("docs.google.com")) return url;
+    if (u.pathname.includes("/spreadsheets/")) {
+      // Force /edit for best live editing
+      const parts = u.pathname.split("/");
+      const idIdx = parts.indexOf("d") + 1;
+      if (idIdx > 0 && parts[idIdx]) {
+        return `https://docs.google.com/spreadsheets/d/${parts[idIdx]}/edit`;
+      }
+    }
+    return url;
+  } catch {
+    return url;
+  }
+}
+
+// --- Phrase banks ---
+
+type Phrase = {
+  label: string;
+  text: string;
+  simple?: string;
+  formal?: string;
+};
+
+const OPENING_PHRASES: Phrase[] = [
+  {
+    label: "Call to order",
+    text: "The chamber will come to order.",
+    simple: "Let’s begin. The chamber is now in session.",
+    formal: "The chamber will come to order; we are now in session.",
+  },
+  {
+    label: "Pledge / Silence",
+    text: "At this time, please rise for a moment of silence, followed by the Pledge if your league so requires.",
+    simple: "Please rise for a brief moment of silence, then the Pledge.",
+    formal: "Delegates, please rise for a moment of silence, followed by the Pledge as required.",
+  },
+  {
+    label: "Agenda notice",
+    text: "We will proceed with docketed legislation in order unless moved otherwise by the chamber.",
+    simple: "We’ll follow the docket order unless the chamber moves to change it.",
+    formal: "We shall proceed with the published docket, absent successful motion to amend the agenda.",
+  },
+  {
+    label: "Authorship",
+    text: "Without objection, the author has first privilege on their legislation. Seeing none, authorship is reserved.",
+    simple: "Author has first chance to speak unless there’s an objection. Hearing none, it’s reserved.",
+    formal: "Hearing no objection, authorship priority is granted to the sponsor of the legislation.",
+  },
+];
+
+const MOTION_PHRASES: Phrase[] = [
+  {
+    label: "Accept the motion",
+    text: "That is a proper motion. Is there a second?",
+    simple: "That motion is in order. Do I hear a second?",
+    formal: "The motion is proper. Is there a second?",
+  },
+  {
+    label: "Table / Postpone",
+    text: "There is a motion to table. This requires a second and a simple majority. All in favor?",
+    simple: "Motion to table—needs a second and a majority. All in favor?",
+    formal: "A motion to lay on the table has been offered. It requires a second and a majority vote.",
+  },
+  {
+    label: "Previous question",
+    text: "There is a motion for previous question to end debate and proceed to voting. This requires a two‑thirds majority.",
+    simple: "Motion to end debate and vote—needs two‑thirds.",
+    formal: "Previous question has been moved; two‑thirds is required to close debate.",
+  },
+  {
+    label: "Amendment intro",
+    text: "An amendment has been offered. Please provide the exact wording and submit a copy to the chair.",
+    simple: "We have an amendment. State the wording and send it to the chair.",
+    formal: "An amendment is before the chamber. The mover will furnish precise text to the chair.",
+  },
+];
+
+const VOTING_PHRASES: Phrase[] = [
+  {
+    label: "State the question",
+    text: "The question is on the adoption of this legislation. All those in favor, please say ‘Aye’. All those opposed, ‘No’.",
+    simple: "We’re voting on this bill. All in favor say ‘Aye’. Opposed say ‘No’.",
+    formal: "The question before the chamber is the adoption of the legislation. Those in favor say ‘Aye’; those opposed say ‘No’.",
+  },
+  {
+    label: "Division",
+    text: "Division has been called. We will proceed to a counted vote. Please raise your placards and keep them raised until counted.",
+    simple: "Division called. Hold your placards up until counted.",
+    formal: "A division of the house being called, we shall proceed with a counted vote by placard.",
+  },
+  {
+    label: "Result",
+    text: "On this question, the Ayes are __ and the Nos are __. By a vote of __ to __, the legislation does __.",
+    simple: "Votes: Ayes __, Nos __. The bill does __.",
+    formal: "On the question, with Ayes at __ and Nos at __, the measure does __.",
+  },
+];
+
+const TIME_PHRASES: Phrase[] = [
+  {
+    label: "Time signals",
+    text: "The chair will provide time signals by hand for one minute remaining and for time elapsed.",
+    simple: "I’ll signal at one minute left and at time.",
+    formal: "The chair shall provide manual signals at the one‑minute mark and at elapsed time.",
+  },
+  {
+    label: "Yield reminder",
+    text: "Speakers, please indicate if you yield to questions, to another member, or to the chair.",
+    simple: "When you finish, tell me if you yield to questions, to another senator, or to the chair.",
+    formal: "Upon conclusion, please state whether you yield to questions, to another member, or to the chair.",
+  },
+  {
+    label: "Time elapsed",
+    text: "Time has elapsed. Please conclude in a sentence.",
+    simple: "Time. Please wrap up in one sentence.",
+    formal: "Time has expired. Kindly conclude your remarks succinctly.",
+  },
+];
