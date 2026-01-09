@@ -19,17 +19,64 @@
 </header>
 
 <main id="app">
+  <section class="sheet-loader">
+    <input id="sheetInput" placeholder="Paste Google Sheet link or ID" />
+    <button id="loadSheetBtn">Load Sheet</button>
+  </section>
+
   <section id="sheetSection">
     <iframe
       id="sheetIframe"
       title="Congress Precedence Sheet"
       loading="lazy"
-      referrerpolicy="no-referrer"
     ></iframe>
   </section>
 </main>
 
-<section id="timerPanel" aria-label="Speech Timer" tabindex="0"></section>
+<section id="timerPanel" tabindex="0" aria-label="Speech Timer"></section>
+
+<!-- Motions Modal -->
+<div class="modal" id="motionsModal" role="dialog">
+  <div class="modal-content">
+    <h2>Congress Motions</h2>
+    <ul>
+      <li><b>Previous Question</b> – 2/3 vote</li>
+      <li><b>Table</b> – Majority</li>
+      <li><b>Extend Debate</b> – 2/3</li>
+      <li><b>Point of Order</b> – Chair rules</li>
+      <li><b>Division of the Question</b> – Majority</li>
+    </ul>
+    <button class="close">Close</button>
+  </div>
+</div>
+
+<!-- Scripts Modal -->
+<div class="modal" id="scriptsModal" role="dialog">
+  <div class="modal-content">
+    <h2>Presiding Officer Scripts</h2>
+    <p>1 tap at 2:00</p>
+    <p>2 taps at 2:30</p>
+    <p>3 taps at 2:50</p>
+    <p>Gavel at 3:00</p>
+    <button class="close">Close</button>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal" id="settingsModal" role="dialog">
+  <div class="modal-content">
+    <h2>Settings</h2>
+    <label>
+      Time Format
+      <select id="timeFormat">
+        <option value="12">12-hour</option>
+        <option value="24">24-hour</option>
+      </select>
+    </label>
+    <button id="saveSettings">Save</button>
+    <button class="close">Close</button>
+  </div>
+</div>
 
 <script type="module" src="js/app.js"></script>
 </body>
